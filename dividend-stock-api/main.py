@@ -89,7 +89,3 @@ def main(request):
 
     return data, 200
 
-
-if __name__ == '__main__':
-    data = main({})
-    print(data)
