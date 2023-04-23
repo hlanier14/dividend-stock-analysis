@@ -1,4 +1,5 @@
 from google.cloud import bigquery
+from flask import jsonify
 import pandas as pd
 from dotenv import load_dotenv
 
@@ -87,5 +88,5 @@ def main(request):
 
         data.append(ticker_data)
 
-    return data, 200
+    return jsonify(data), 200
 
