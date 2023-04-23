@@ -88,5 +88,11 @@ def main(request):
 
         data.append(ticker_data)
 
-    return jsonify(data), 200
+    response = jsonify(data)
+    
+    response.headers.add('Access-Control-Allow-Origin', '*')
+    response.headers.add('Access-Control-Allow-Methods', 'GET')
+    response.headers.add('Access-Control-Allow-Headers', 'Content-Type')
+
+    return response, 200
 
