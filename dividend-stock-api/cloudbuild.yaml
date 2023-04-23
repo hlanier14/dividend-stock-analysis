@@ -1,0 +1,18 @@
+steps:
+- name: 'python'
+  args: ['pip', 'install', '-r', './dividend-stock-api/requirements.txt', '--user']
+- name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
+  args:
+  - gcloud
+  - functions 
+  - deploy
+  - dividend-stock-api
+  - --runtime=python310
+  - --source=./dividend-stock-api
+  - --entry-point=main
+  - --trigger-http
+  - --region=us-central1
+  - --allow-unauthenticated
+  - --timeout=180
+  - --memory=2Gi
+  - --min-instances=0
