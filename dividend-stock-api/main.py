@@ -1,5 +1,5 @@
 from google.cloud import bigquery
-import json
+from flask import jsonify
 import pandas as pd
 from dotenv import load_dotenv
 
@@ -129,13 +129,11 @@ def main(request):
 
         data.append(ticker_data)
 
-    response = json.dumps(data)
+    response = jsonify(data)
     
-    # response.headers.add('Access-Control-Allow-Origin', '*')
-    # response.headers.add('Access-Control-Allow-Methods', 'GET')
-    # response.headers.add('Access-Control-Allow-Headers', 'Content-Type')
+    response.headers.add('Access-Control-Allow-Origin', '*')
+    response.headers.add('Access-Control-Allow-Methods', 'GET')
+    response.headers.add('Access-Control-Allow-Headers', 'Content-Type')
 
     return response, 200
 
-if __name__ == "__main__":
-    main({})
