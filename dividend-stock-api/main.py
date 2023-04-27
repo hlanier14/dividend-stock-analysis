@@ -30,7 +30,7 @@ def main(request):
 
     bg_client = bigquery.Client()
 
-    dividend_metadata_job = bg_client.query(f"SELECT * FROM `{DIVIDEND_META_TABLE_ID}` WHERE consecutiveYears >= 5 AND fiveYearCV <= .1;")
+    dividend_metadata_job = bg_client.query(f"SELECT * FROM `{DIVIDEND_META_TABLE_ID}` WHERE consecutiveYears >= 5 AND fiveYearCV <= .5;")
     dividend_metadata_job.result()
     dividend_metadata = dividend_metadata_job.to_dataframe()
     dividend_metadata.fillna(-1, inplace=True)
@@ -55,7 +55,7 @@ def main(request):
     dividend_data['date'] = pd.to_datetime(dividend_data['date'])
     dividend_data.fillna(-1, inplace=True)
 
-    price_data_job = bg_client.query(f"SELECT * FROM `{PRICE_TABLE_ID}` WHERE ticker IN UNNEST({tickers}) AND date >= DATE_SUB(CURRENT_DATE, INTERVAL 30 DAY) ORDER BY date;")
+    price_data_job = bg_client.query(f"SELECT * FROM `{PRICE_TABLE_ID}` WHERE ticker IN UNNEST({tickers}) AND date >= DATE_SUB(CURRENT_DATE, INTERVAL 1 YEAR) ORDER BY date;")
     price_data_job.result()
     price_data = price_data_job.to_dataframe()
     price_data['date'] = pd.to_datetime(price_data['date'])
