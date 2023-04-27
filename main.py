@@ -16,11 +16,13 @@ PRICE_TABLE = 'prices'
 DIVIDEND_TABLE = 'dividends'
 COMPANY_TABLE = 'companies'
 FINANCIALS_TABLE = 'company_financials'
+BENCHMARK_TABLE = 'benchmarks'
 
 PRICE_TABLE_ID = f'{PROJECT_ID}.{DATASET_ID}.{PRICE_TABLE}'
 DIVIDEND_TABLE_ID = f'{PROJECT_ID}.{DATASET_ID}.{DIVIDEND_TABLE}'
 COMPANY_TABLE_ID = f'{PROJECT_ID}.{DATASET_ID}.{COMPANY_TABLE}'
 FINANCIALS_TABLE_ID = f'{PROJECT_ID}.{DATASET_ID}.{FINANCIALS_TABLE}'
+BENCHMARK_TABLE_ID = f'{PROJECT_ID}.{DATASET_ID}.{BENCHMARK_TABLE}'
 
 PRICE_SCHEMA = [
     bigquery.SchemaField("date", "DATE"),
@@ -49,6 +51,12 @@ FINANCIALS_SCHEMA = [
     bigquery.SchemaField("exDividendDate", "TIMESTAMP"),
     bigquery.SchemaField("forwardPE", "FLOAT"),
     bigquery.SchemaField("forwardEps", "FLOAT")
+]
+
+BENCHMARK_SCHEMA = [
+    bigquery.SchemaField("date", "DATE"),
+    bigquery.SchemaField("ticker", "STRING"),
+    bigquery.SchemaField("value", "FLOAT")
 ]
 
 def load_table_from_dataframe(bg_client: bigquery.Client, 
@@ -97,31 +105,62 @@ def main():
     dividends = pd.DataFrame({'date': [], 'ticker': [], 'dividend': []})
     companies = pd.DataFrame({'ticker': [], 'shortName': [], 'longName': [], 'website': [], 'industry': [], 'sector': []})
     financials = pd.DataFrame({'ticker': [], 'payoutRatio': [], 'exDividendDate': [], 'forwardPE': [], 'forwardEps': []})
+    benchmark = pd.DataFrame({'date': [], 'ticker': [], 'value': []})
+
+    # ^GSPC, ^TNX
+    # stock = yf.Ticker("^GSPC")
+
+    # historical_data = stock.history(start="2012-01-01", end="2023-04-23")
+    # price_data = historical_data['Close']
+    # price_data = price_data.reset_index()
+    # price_data['date'] = price_data['Date'].dt.strftime('%Y-%m-%d')
+    # price_data['ticker'] = ["^GSPC" for _ in range(len(price_data.index))]
+    # price_data = price_data.rename(columns={'Close': 'value'})
+    # price_data = price_data[['date', 'ticker', 'value']]
+    # benchmark = pd.concat([benchmark, price_data], axis=0, ignore_index=True)
+
+    # stock = yf.Ticker("^TNX")
+
+    # historical_data = stock.history(start="2012-01-01", end="2023-04-23")
+    # price_data = historical_data['Close']
+    # price_data = price_data.reset_index()
+    # price_data['date'] = price_data['Date'].dt.strftime('%Y-%m-%d')
+    # price_data['ticker'] = ["^TNX" for _ in range(len(price_data.index))]
+    # price_data = price_data.rename(columns={'Close': 'value'})
+    # price_data = price_data[['date', 'ticker', 'value']]
+    # benchmark = pd.concat([benchmark, price_data], axis=0, ignore_index=True)
+    # print(benchmark)
 
     for ticker in tickers:
 
         print(ticker)
 
         stock = yf.Ticker(ticker)
-        # historical_data = stock.history(period='max')
+    
+        # historical_data = stock.history(period='1yr')
 
         stock_data = stock.info
 
-        try: 
-            company_keys = ['shortName', 'longName', 'website', 'industry', 'sector']
-            company_data = {key: stock_data[key] for key in company_keys}
-            company_data['ticker'] = ticker
-            companies = pd.concat([companies, pd.DataFrame(company_data, index=[0])], ignore_index=True)
-        except:
-            print(f'no company data for {ticker}')
+        # print(stock_data['beta'])
+        # break
+        # try: 
+        #     company_keys = ['shortName', 'longName', 'website', 'industry', 'sector']
+        #     company_data = {key: stock_data[key] for key in company_keys}
+        #     company_data['ticker'] = ticker
+        #     companies = pd.concat([companies, pd.DataFrame(company_data, index=[0])], ignore_index=True)
+        # except:
+        #     print(f'no company data for {ticker}')
 
-        try:
-            financial_keys = ['payoutRatio', 'exDividendDate', 'forwardPE', 'forwardEps']
-            company_financials = {key: stock_data[key] for key in financial_keys}
-            company_financials['ticker'] = ticker
-            financials = pd.concat([financials, pd.DataFrame(company_financials, index=[0])], ignore_index=True)
-        except:
-            print(f'no financial data for {ticker}')
+        financial_keys = ['payoutRatio', 'exDividendDate', 'forwardPE', 'forwardEps']
+        company_financials = {key: None for key in financial_keys}
+        company_financials['ticker'] = ticker
+        for key in financial_keys:
+            try:
+                company_financials[key] = stock_data[key]
+            except:
+                print(f'{key} data not found for {ticker}')
+        financials = pd.concat([financials, pd.DataFrame(company_financials, index=[0])], ignore_index=True)
+
 
         # try:
         #     price_data = historical_data['Close']
@@ -156,10 +195,10 @@ def main():
     # prices.to_csv('prices.csv', index=False)
     # dividends.to_csv('dividends.csv', index=False)
 
-    companies.to_csv('companies.csv', index=False)
-    financials.to_csv('financials.csv', index=False)
+    # companies.to_csv('companies.csv', index=False)
+    # financials.to_csv('financials.csv', index=False)
 
-    bg_client = bigquery.Client()
+    # bg_client = bigquery.Client()
 
     # load_table_from_dataframe(bg_client=bg_client,
     #                           data=prices,
@@ -175,21 +214,26 @@ def main():
     #                           write_disposition='WRITE_APPEND',
     #                           ignore_unknown_values=True)
 
-    load_table_from_dataframe(bg_client=bg_client,
-                              data=companies,
-                              table_id=COMPANY_TABLE_ID,
-                              schema=COMPANY_SCHEMA,
-                              write_disposition='WRITE_TRUNCATE',
-                              ignore_unknown_values=True)
+    # load_table_from_dataframe(bg_client=bg_client,
+    #                           data=companies,
+    #                           table_id=COMPANY_TABLE_ID,
+    #                           schema=COMPANY_SCHEMA,
+    #                           write_disposition='WRITE_TRUNCATE',
+    #                           ignore_unknown_values=True)
     
-    load_table_from_dataframe(bg_client=bg_client,
-                              data=financials,
-                              table_id=FINANCIALS_TABLE_ID,
-                              schema=FINANCIALS_SCHEMA,
-                              write_disposition='WRITE_TRUNCATE',
-                              ignore_unknown_values=True)
+    # load_table_from_dataframe(bg_client=bg_client,
+    #                           data=financials,
+    #                           table_id=FINANCIALS_TABLE_ID,
+    #                           schema=FINANCIALS_SCHEMA,
+    #                           write_disposition='WRITE_TRUNCATE',
+    #                           ignore_unknown_values=True)
 
-
+    # load_table_from_dataframe(bg_client=bg_client,
+    #                           data=benchmark,
+    #                           table_id=BENCHMARK_TABLE_ID,
+    #                           schema=BENCHMARK_SCHEMA,
+    #                           write_disposition='WRITE_APPEND',
+    #                           ignore_unknown_values=True)
     
 if __name__ == '__main__':
     main()
