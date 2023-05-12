@@ -1,5 +1,0 @@
-pandas==2.0.0
-google-cloud-bigquery==3.7.0
-python-dotenv==1.0.0
-db-dtypes==1.1.1
-Flask==2.2.3
