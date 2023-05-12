@@ -5,7 +5,7 @@ import yfinance as yf
 import pandas as pd
 from datetime import timedelta, datetime
 from dotenv import load_dotenv
-from flask import Flask, request
+from flask import Flask, jsonify
 from flask_cors import CORS
 from requests import Session
 from requests_cache import CacheMixin, SQLiteCache
@@ -292,15 +292,7 @@ def get_valuations():
 
         data.append(ticker_data)
 
-    response = {
-        'benchmarks': {
-            'tenYearTBill': t_bill_price,
-            'sp500': sp_cagr
-        },
-        'companies': data
-    }
-
-    return response, 200
+    return jsonify(data), 200
     
 
 if __name__ == '__main__':
