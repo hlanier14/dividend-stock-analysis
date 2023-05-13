@@ -296,7 +296,15 @@ def get_valuations():
 
         data.append(ticker_data)
 
-    return jsonify(data), 200
+    response = {
+        'benchmarks': {
+            'tenYearTBill': t_bill_price,
+            'sp500CAGR': sp_cagr
+        },
+        'companies': data
+    }
+
+    return jsonify(response), 200
     
 
 if __name__ == '__main__':
