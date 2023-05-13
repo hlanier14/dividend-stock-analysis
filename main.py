@@ -248,6 +248,7 @@ def get_valuations():
         dividend_payers_query = file.read()
 
     dividend_payers = bg_client.query(dividend_payers_query).to_dataframe()
+    dividend_payers = dividend_payers.fillna(0)
     dividend_payer_tickers = dividend_payers['ticker'].to_list()
 
     with open('./sql/dividend_history.sql', 'r') as file:
@@ -267,10 +268,12 @@ def get_valuations():
     dividend_history = bg_client.query(dividend_history_query).to_dataframe()
     dividend_history['date'] = pd.to_datetime(dividend_history['date'])
     dividend_history['date'] = dividend_history['date'].dt.strftime('%Y-%m-%d')
+    dividend_history = dividend_history.fillna(0)
 
     price_history = bg_client.query(price_history_query).to_dataframe()
     price_history['date'] = pd.to_datetime(price_history['date'])
     price_history['date'] = price_history['date'].dt.strftime('%Y-%m-%d')
+    price_history = price_history.fillna(0)
 
     t_bill_price = bg_client.query(t_bill_price_query).to_dataframe().iloc[0,0]
     sp_cagr = bg_client.query(sp_cagr_query).to_dataframe().iloc[0,0]
