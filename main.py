@@ -286,6 +286,7 @@ def get_valuations():
         ticker_data['requiredRate'] = t_bill_price + ticker_data['fiveYearBeta'] * (sp_cagr - t_bill_price)
 
         ticker_data['valuation'] = (ticker_data['lastDividend'] * ticker_data['dividendFrequency']) / (ticker_data['requiredRate'] - ticker_data['fiveYearCAGR'])
+        ticker_data['pctChange'] = (ticker_data['valuation'] - ticker_data['lastPrice']) / ticker_data['lastPrice']
 
         ticker_price_history = price_history.loc[price_history['ticker'] == ticker].sort_values(by='date', ascending=True)
         ticker_dividend_history = dividend_history.loc[dividend_history['ticker'] == ticker].sort_values(by='date', ascending=True)
