@@ -156,6 +156,11 @@ SELECT
   c.payoutRatio,
   c.exDividendDate,
   c.forwardPE,
-  c.forwardEps
+  c.forwardEps,
+  d.consecutiveYears,
+  d.fiveYearCAGR,
+  d.dividendFrequency,
+  d.fiveYearCV
 FROM model AS m
-LEFT JOIN `dividend_stocks.companies` AS c ON m.ticker = c.ticker;
+LEFT JOIN `dividend_stocks.companies` AS c ON m.ticker = c.ticker
+LEFT JOIN `dividend_stocks.dividend_metadata` AS d ON m.ticker = d.ticker;
