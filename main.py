@@ -182,6 +182,8 @@ def update_dividend_metadata():
 @app.route('/update/model', methods=['POST'])
 def update_model():
     
+    print("Updating price and dividend history...")
+
     with open('./sql/ticker_dates.sql', 'r') as file:
         query = file.read()
     ticker_dates = bg_client.query(query).to_dataframe()
@@ -241,6 +243,8 @@ def update_model():
                               schema=DIVIDEND_SCHEMA,
                               write_disposition='WRITE_APPEND',
                               ignore_unknown_values=True)
+
+    print("Updating model file...")
 
     with open('./sql/dividend_payers.sql', 'r') as file:
         dividend_payers_query = file.read()
