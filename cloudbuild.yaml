@@ -13,5 +13,4 @@ steps:
       - '--region=us-central1'
       - '--allow-unauthenticated'
       - '--memory=2Gi'
-
-timeout: '3600s'
+      - '--timeout=30m'
