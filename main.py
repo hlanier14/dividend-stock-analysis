@@ -1,17 +1,17 @@
-from google.cloud import bigquery
+from google.cloud import bigquery, storage
 import bs4 as bs
 import requests
 import yfinance as yf
 import pandas as pd
+import json
 from datetime import timedelta, datetime
 from dotenv import load_dotenv
 from flask import Flask, jsonify
 from flask_cors import CORS
 from requests import Session
-from requests_cache import CacheMixin, SQLiteCache
 from requests_ratelimiter import LimiterMixin, MemoryQueueBucket
 from pyrate_limiter import Duration, RequestRate, Limiter
-class CachedLimiterSession(CacheMixin, LimiterMixin, Session):
+class LimiterSession(LimiterMixin, Session):
     pass
 
 load_dotenv()
@@ -21,6 +21,7 @@ CORS(app, supports_credentials=True)
 
 PROJECT_ID = 'portfolio-website-378500'
 DATASET_ID = 'dividend_stocks'
+BUCKET_NAME = 'dividend-stock-analysis'
 LOCATION = 'us-central1'
 
 PRICE_TABLE = 'prices'
@@ -28,6 +29,8 @@ DIVIDEND_TABLE = 'dividends'
 DIVIDEND_METADATA_TABLE = 'dividend_metadata'
 COMPANY_TABLE = 'companies'
 BENCHMARK_TABLE = 'benchmarks'
+
+STORAGE_FILE_NAME = 'model.json'
 
 PRICE_TABLE_ID = f'{PROJECT_ID}.{DATASET_ID}.{PRICE_TABLE}'
 DIVIDEND_TABLE_ID = f'{PROJECT_ID}.{DATASET_ID}.{DIVIDEND_TABLE}'
@@ -68,13 +71,13 @@ COMPANY_SCHEMA = [
     bigquery.SchemaField("forwardEps", "FLOAT")
 ]
 
-session = CachedLimiterSession(
+session = LimiterSession(
     limiter=Limiter(RequestRate(2, Duration.SECOND*5)), 
-    bucket_class=MemoryQueueBucket,
-    backend=SQLiteCache("yfinance.cache"),
+    bucket_class=MemoryQueueBucket
 )
 
 bg_client = bigquery.Client()
+storage_client = storage.Client()
 
 
 def load_table_from_dataframe(bg_client: bigquery.Client, 
@@ -159,8 +162,25 @@ def update_companies():
 
     return "Companies updated successfully", 200
 
-@app.route('/update/history', methods=['POST'])
-def update_history():
+@app.route('/update/dividend_metadata', methods=['POST'])
+def update_dividend_metadata():
+
+    with open('./sql/dividend_metadata.sql', 'r') as file:
+        query = file.read()
+
+    dividend_metadata = bg_client.query(query).to_dataframe()
+
+    load_table_from_dataframe(bg_client=bg_client,
+                              data=dividend_metadata,
+                              table_id=DIVIDEND_METADATA_TABLE_ID,
+                              schema=DIVIDEND_METADATA_SCHEMA,
+                              write_disposition='WRITE_TRUNCATE',
+                              ignore_unknown_values=True)
+    
+    return "Dividend metadata updated successfully", 200
+
+@app.route('/update/model', methods=['POST'])
+def update_model():
     
     with open('./sql/ticker_dates.sql', 'r') as file:
         query = file.read()
@@ -221,34 +241,14 @@ def update_history():
                               schema=DIVIDEND_SCHEMA,
                               write_disposition='WRITE_APPEND',
                               ignore_unknown_values=True)
-    
-    return "Price and dividend history updated successfully", 200
 
-@app.route('/update/dividend_metadata', methods=['POST'])
-def update_dividend_metadata():
-
-    with open('./sql/dividend_metadata.sql', 'r') as file:
-        query = file.read()
-
-    dividend_metadata = bg_client.query(query).to_dataframe()
-
-    load_table_from_dataframe(bg_client=bg_client,
-                              data=dividend_metadata,
-                              table_id=DIVIDEND_METADATA_TABLE_ID,
-                              schema=DIVIDEND_METADATA_SCHEMA,
-                              write_disposition='WRITE_TRUNCATE',
-                              ignore_unknown_values=True)
-    
-    return "Dividend metadata updated successfully", 200
-
-@app.route('/valuations', methods=['GET'])
-def get_valuations():
-    
     with open('./sql/dividend_payers.sql', 'r') as file:
         dividend_payers_query = file.read()
 
     dividend_payers = bg_client.query(dividend_payers_query).to_dataframe()
     dividend_payers = dividend_payers.fillna(0)
+    dividend_payers['exDividendDate'] = pd.to_datetime(dividend_payers['exDividendDate'])
+    dividend_payers['exDividendDate'] = dividend_payers['exDividendDate'].dt.strftime("%Y-%m-%d")
     dividend_payer_tickers = dividend_payers['ticker'].to_list()
 
     with open('./sql/dividend_history.sql', 'r') as file:
@@ -258,12 +258,6 @@ def get_valuations():
     with open('./sql/price_history.sql', 'r') as file:
         price_history_query = file.read()
         price_history_query = price_history_query.replace('DIVIDEND_PAYERS', str(dividend_payer_tickers))
-
-    with open('./sql/t_bill_price.sql', 'r') as file:
-        t_bill_price_query = file.read()
-
-    with open('./sql/sp_cagr.sql', 'r') as file:
-        sp_cagr_query = file.read()
 
     dividend_history = bg_client.query(dividend_history_query).to_dataframe()
     dividend_history['date'] = pd.to_datetime(dividend_history['date'])
@@ -275,37 +269,51 @@ def get_valuations():
     price_history['date'] = price_history['date'].dt.strftime('%Y-%m-%d')
     price_history = price_history.fillna(0)
 
-    t_bill_price = bg_client.query(t_bill_price_query).to_dataframe().iloc[0,0] / 100
-    sp_cagr = bg_client.query(sp_cagr_query).to_dataframe().iloc[0,0]
+    response = {
+        'lastUpdated': max(dividend_payers['lastUpdated']).strftime("%Y-%m-%dT%H:%M:%S"),
+        'benchmarks': {
+            'riskFreeRate': max(dividend_payers['riskFreeRate']),
+            'marketRate': max(dividend_payers['marketRate'])
+        }
+    }
+
+    dividend_payers = dividend_payers.drop(columns=['lastUpdated', 'riskFreeRate', 'marketRate'])
 
     data = []
     for ticker in dividend_payer_tickers:
 
         ticker_data = dividend_payers.loc[dividend_payers['ticker'] == ticker].to_dict('records')[0]
 
-        ticker_data['requiredRate'] = t_bill_price + ticker_data['fiveYearBeta'] * (sp_cagr - t_bill_price)
-
-        ticker_data['valuation'] = (ticker_data['lastDividend'] * ticker_data['dividendFrequency']) / (ticker_data['requiredRate'] - ticker_data['fiveYearCAGR'])
-        ticker_data['pctChange'] = (ticker_data['valuation'] - ticker_data['lastPrice']) / ticker_data['lastPrice']
-
-        ticker_price_history = price_history.loc[price_history['ticker'] == ticker].sort_values(by='date', ascending=True)
-        ticker_dividend_history = dividend_history.loc[dividend_history['ticker'] == ticker].sort_values(by='date', ascending=True)
+        ticker_price_history = price_history.loc[price_history['ticker'] == ticker]
+        ticker_dividend_history = dividend_history.loc[dividend_history['ticker'] == ticker]
 
         ticker_data['priceHistory'] = ticker_price_history[['date', 'price']].to_dict('records')
         ticker_data['dividendHistory'] = ticker_dividend_history[['date', 'dividend']].to_dict('records')
 
         data.append(ticker_data)
 
-    response = {
-        'benchmarks': {
-            'tenYearTBill': t_bill_price,
-            'sp500CAGR': sp_cagr
-        },
-        'companies': data
-    }
+    response['companies'] = data
 
-    return jsonify(response), 200
-    
+    bucket = storage_client.get_bucket(BUCKET_NAME)
+    blob = bucket.blob(STORAGE_FILE_NAME)
+    json_string = json.dumps(response)
+    blob.upload_from_string(json_string, content_type='application/json')
+
+    return "Successfully updated stock history and model storage file", 200
+
+@app.route('/model', methods=['GET'])
+def get_model():
+
+    bucket = storage_client.get_bucket(BUCKET_NAME)
+    blob = bucket.get_blob(STORAGE_FILE_NAME)
+
+    if blob is None:
+        return jsonify({'error': 'File not found'})
+
+    json_string = blob.download_as_text()
+    json_data = json.loads(json_string)
+
+    return jsonify(json_data), 200
 
 if __name__ == '__main__':
     app.run(host="0.0.0.0", port=5000)
