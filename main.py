@@ -1,18 +1,14 @@
 from google.cloud import bigquery, storage
-import bs4 as bs
-import requests
+from requests_ratelimiter import MemoryQueueBucket
+from pyrate_limiter import Duration, RequestRate, Limiter
 import yfinance as yf
 import pandas as pd
-import json
-from datetime import timedelta, datetime
+from datetime import datetime
 from dotenv import load_dotenv
 from flask import Flask, jsonify
 from flask_cors import CORS
-from requests import Session
-from requests_ratelimiter import LimiterMixin, MemoryQueueBucket
-from pyrate_limiter import Duration, RequestRate, Limiter
-class LimiterSession(LimiterMixin, Session):
-    pass
+
+import utils
 
 load_dotenv()
 
@@ -21,22 +17,15 @@ CORS(app, supports_credentials=True)
 
 PROJECT_ID = 'portfolio-website-378500'
 DATASET_ID = 'dividend_stocks'
-BUCKET_NAME = 'dividend-stock-analysis'
+STORAGE_BUCKET_NAME = 'dividend-stock-analysis'
+STORAGE_FILE_NAME = 'model.json'
 LOCATION = 'us-central1'
 
-PRICE_TABLE = 'prices'
-DIVIDEND_TABLE = 'dividends'
-DIVIDEND_METADATA_TABLE = 'dividend_metadata'
-COMPANY_TABLE = 'companies'
-BENCHMARK_TABLE = 'benchmarks'
-
-STORAGE_FILE_NAME = 'model.json'
-
-PRICE_TABLE_ID = f'{PROJECT_ID}.{DATASET_ID}.{PRICE_TABLE}'
-DIVIDEND_TABLE_ID = f'{PROJECT_ID}.{DATASET_ID}.{DIVIDEND_TABLE}'
-DIVIDEND_METADATA_TABLE_ID = f'{PROJECT_ID}.{DATASET_ID}.{DIVIDEND_METADATA_TABLE}'
-COMPANY_TABLE_ID = f'{PROJECT_ID}.{DATASET_ID}.{COMPANY_TABLE}'
-BENCHMARK_TABLE_ID = f'{PROJECT_ID}.{DATASET_ID}.{BENCHMARK_TABLE}'
+PRICE_TABLE_ID = f'{PROJECT_ID}.{DATASET_ID}.prices'
+DIVIDEND_TABLE_ID = f'{PROJECT_ID}.{DATASET_ID}.dividends'
+DIVIDEND_METADATA_TABLE_ID = f'{PROJECT_ID}.{DATASET_ID}.dividend_metadata'
+COMPANY_TABLE_ID = f'{PROJECT_ID}.{DATASET_ID}.companies'
+BENCHMARK_TABLE_ID = f'{PROJECT_ID}.{DATASET_ID}.benchmarks'
 
 PRICE_SCHEMA = [
     bigquery.SchemaField("date", "DATE"),
@@ -71,7 +60,7 @@ COMPANY_SCHEMA = [
     bigquery.SchemaField("forwardEps", "FLOAT")
 ]
 
-session = LimiterSession(
+session = utils.LimiterSession(
     limiter=Limiter(RequestRate(2, Duration.SECOND*5)), 
     bucket_class=MemoryQueueBucket
 )
@@ -80,244 +69,158 @@ bg_client = bigquery.Client()
 storage_client = storage.Client()
 
 
-def load_table_from_dataframe(bg_client: bigquery.Client, 
-                              data: pd.DataFrame,
-                              table_id: str,
-                              schema: list,
-                              write_disposition: str, 
-                              ignore_unknown_values: bool) -> None:
-    
-    job_config = bigquery.LoadJobConfig(
-        source_format=bigquery.SourceFormat.CSV, 
-        write_disposition=write_disposition,
-        ignore_unknown_values=ignore_unknown_values,
-        schema=schema
-    )
-
-    load_job = bg_client.load_table_from_dataframe(
-        data,
-        table_id,
-        location=LOCATION,
-        job_config=job_config
-    )
-
-    try:
-        load_job.result()
-    except Exception as e:
-        print(f"Error loading data into {table_id}: {e}")
-        return None
-
-def sp_tickers() -> list:
-    response = requests.get('http://en.wikipedia.org/wiki/List_of_S%26P_500_companies')
-    soup = bs.BeautifulSoup(response.text, 'lxml')
-    table = soup.find('table', {'class': 'wikitable sortable'})
-    tickers = []
-    for row in table.findAll('tr')[1:]:
-        ticker = row.findAll('td')[0].text
-        tickers.append(ticker.replace('\n', ''))
-    return tickers
-
-def slice_df(data: pd.DataFrame, last_date: datetime) -> pd.DataFrame:
-
-    data = data.reset_index()
-    data['Date'] = pd.to_datetime(data['Date'], utc=True)
-
-    if not isinstance(last_date, pd._libs.tslibs.nattype.NaTType):
-        start_date = last_date + timedelta(days=1)
-        start_date = pd.to_datetime(start_date, utc=True)
-        data = data.loc[data['Date'] >= start_date]
-    
-    return data
-
 @app.route('/update/companies', methods=['POST'])
 def update_companies():
+    """
+    Replace the company table with stock information of current S&P 500 companies from Yahoo Finance.
+    """
 
+    # create empty df with same columns as company table
     columns = [field.name for field in COMPANY_SCHEMA]
     companies = pd.DataFrame(columns=columns)
     columns.remove('ticker')
 
-    tickers = sp_tickers()
+    # extract tickers of current S&P 500 companies
+    tickers = utils.sp_tickers()
 
     for ticker in tickers:
-
+        
+        # get stock info from yfinance
         stock = yf.Ticker(ticker, session=session)
         stock_data = stock.info
 
+        # use company table column names to get values from stock info
         company_data = {col: stock_data.get(col) for col in columns}
 
+        # skip stock if all info values are none
         if all(value is None for value in company_data.values()):
             continue
 
         company_data['ticker'] = ticker
 
+        # append stock info to companies df
         companies = pd.concat([companies, pd.DataFrame(company_data, index=[0])], 
                               ignore_index=True)
 
-    load_table_from_dataframe(bg_client=bg_client,
-                              data=companies,
-                              table_id=COMPANY_TABLE_ID,
-                              schema=COMPANY_SCHEMA,
-                              write_disposition='WRITE_TRUNCATE',
-                              ignore_unknown_values=True)
+    # replace company table with response
+    utils.load_table_from_dataframe(bg_client=bg_client,
+                                    data=companies,
+                                    table_id=COMPANY_TABLE_ID,
+                                    location=LOCATION,
+                                    schema=COMPANY_SCHEMA,
+                                    write_disposition='WRITE_TRUNCATE',
+                                    ignore_unknown_values=True)
 
     return "Companies updated successfully", 200
 
 @app.route('/update/dividend_metadata', methods=['POST'])
 def update_dividend_metadata():
+    """
+    Replace the dividend metadata table with updated values.
+    """
 
-    with open('./sql/dividend_metadata.sql', 'r') as file:
-        query = file.read()
+    # calculate dividend metadata 
+    dividend_metadata = utils.run_query(bg_client=bg_client,
+                                        query_file='./sql/dividend_metadata.sql')
 
-    dividend_metadata = bg_client.query(query).to_dataframe()
-
-    load_table_from_dataframe(bg_client=bg_client,
-                              data=dividend_metadata,
-                              table_id=DIVIDEND_METADATA_TABLE_ID,
-                              schema=DIVIDEND_METADATA_SCHEMA,
-                              write_disposition='WRITE_TRUNCATE',
-                              ignore_unknown_values=True)
+    # replace dividend metadata table with output
+    utils.load_table_from_dataframe(bg_client=bg_client,
+                                    data=dividend_metadata,
+                                    table_id=DIVIDEND_METADATA_TABLE_ID,
+                                    location=LOCATION,
+                                    schema=DIVIDEND_METADATA_SCHEMA,
+                                    write_disposition='WRITE_TRUNCATE',
+                                    ignore_unknown_values=True)
     
     return "Dividend metadata updated successfully", 200
 
-@app.route('/update/model', methods=['POST'])
-def update_model():
-    
+@app.route('/update/history', methods=['POST'])
+def update_history():
+    """
+    Update the price and dividend tables.
+    """
+        
     print("Updating price and dividend history...")
 
-    with open('./sql/ticker_dates.sql', 'r') as file:
-        query = file.read()
-    ticker_dates = bg_client.query(query).to_dataframe()
-
-    prices = pd.DataFrame(columns=[field.name for field in PRICE_SCHEMA])
-    dividends = pd.DataFrame(columns=[field.name for field in DIVIDEND_SCHEMA])
-
-    for ticker in ticker_dates['ticker']:
-        
-        ticker_data = ticker_dates.loc[ticker_dates['ticker'] == ticker].iloc[0]
-        earliest_date = ticker_data['earliestDate']
-
-        stock = yf.Ticker(ticker, session=session)
-
-        if isinstance(earliest_date, pd._libs.tslibs.nattype.NaTType):
-            historical_data = stock.history(interval='1d', 
-                                            period='max')
-        else:
-            start_date = earliest_date + timedelta(days=1)
-            historical_data = stock.history(interval='1d', 
-                                            start=start_date)
-        
-        if len(historical_data.index) == 0:
-            continue
-
-        price_data = slice_df(data=historical_data['Close'],
-                              last_date=ticker_data['lastPriceDate'])
-
-        if len(price_data) != 0:
-            price_data['date'] = price_data['Date'].dt.strftime('%Y-%m-%d')
-            price_data['ticker'] = [ticker for _ in range(len(price_data.index))]
-            price_data = price_data.rename(columns={'Close': 'price'})
-            price_data = price_data[['date', 'ticker', 'price']]
-            prices = pd.concat([prices, price_data], axis=0, ignore_index=True)
-
-
-        dividend_data = slice_df(data=stock.dividends,
-                                 last_date=ticker_data['lastDividendDate'])
-
-        if len(dividend_data) != 0:
-            dividend_data['date'] = dividend_data['Date'].dt.strftime('%Y-%m-%d')
-            dividend_data['ticker'] = [ticker for _ in range(len(dividend_data.index))]
-            dividend_data = dividend_data.rename(columns={'Dividends': 'dividend'})
-            dividend_data = dividend_data[['date', 'ticker', 'dividend']]
-            dividends = pd.concat([dividends, dividend_data], axis=0, ignore_index=True)
-
-    load_table_from_dataframe(bg_client=bg_client,
-                              data=prices,
-                              table_id=PRICE_TABLE_ID,
-                              schema=PRICE_SCHEMA,
-                              write_disposition='WRITE_APPEND',
-                              ignore_unknown_values=True)
+    # get the last date when the price and dividend history was updated
+    last_model_update = utils.read_storage_file(storage_client=storage_client,
+                                                bucket_name=STORAGE_BUCKET_NAME,
+                                                file_name=STORAGE_FILE_NAME)
     
-    load_table_from_dataframe(bg_client=bg_client,
-                              data=dividends,
-                              table_id=DIVIDEND_TABLE_ID,
-                              schema=DIVIDEND_SCHEMA,
-                              write_disposition='WRITE_APPEND',
-                              ignore_unknown_values=True)
+    # convert the last updated string to datetime
+    last_updated = datetime.strptime(last_model_update['lastUpdated'], "%Y-%m-%dT%H:%M:%S")
 
-    print("Updating model file...")
+    # get all tickers from company table
+    all_tickers = utils.run_query(bg_client=bg_client,
+                                  query_file='./sql/tickers.sql')
+    all_tickers['ticker'].to_list()
 
-    with open('./sql/dividend_payers.sql', 'r') as file:
-        dividend_payers_query = file.read()
+    # check for newly added tickers that do not have pricing history
+    new_tickers = utils.run_query(bg_client=bg_client,
+                                  query_file='./sql/new_tickers.sql')
+    new_tickers = new_tickers['ticker'].to_list()
 
-    dividend_payers = bg_client.query(dividend_payers_query).to_dataframe()
-    dividend_payers = dividend_payers.fillna(0)
-    dividend_payers['exDividendDate'] = pd.to_datetime(dividend_payers['exDividendDate'])
-    dividend_payers['exDividendDate'] = dividend_payers['exDividendDate'].dt.strftime("%Y-%m-%d")
-    dividend_payer_tickers = dividend_payers['ticker'].to_list()
+    print(f'{len(new_tickers)} new tickers out of {len(all_tickers)} total tickers.')
+    
+    # tickers that have a price history
+    known_tickers = [ticker for ticker in all_tickers if ticker not in new_tickers]
 
-    with open('./sql/dividend_history.sql', 'r') as file:
-        dividend_history_query = file.read()
-        dividend_history_query = dividend_history_query.replace('DIVIDEND_PAYERS', str(dividend_payer_tickers))
+    known_tickers = known_tickers[0:5]
 
-    with open('./sql/price_history.sql', 'r') as file:
-        price_history_query = file.read()
-        price_history_query = price_history_query.replace('DIVIDEND_PAYERS', str(dividend_payer_tickers))
+    # extract data for known tickers from start date
+    known_ticker_data = yf.download(known_tickers, 
+                                    start=last_updated, 
+                                    end=datetime.today(), 
+                                    actions=True)
 
-    dividend_history = bg_client.query(dividend_history_query).to_dataframe()
-    dividend_history['date'] = pd.to_datetime(dividend_history['date'])
-    dividend_history['date'] = dividend_history['date'].dt.strftime('%Y-%m-%d')
-    dividend_history = dividend_history.fillna(0)
+    # extract the price and dividend history from the yf.download request
+    prices_df, dividends_df = utils.extract_prices_and_dividends(yf_data=known_ticker_data)
 
-    price_history = bg_client.query(price_history_query).to_dataframe()
-    price_history['date'] = pd.to_datetime(price_history['date'])
-    price_history['date'] = price_history['date'].dt.strftime('%Y-%m-%d')
-    price_history = price_history.fillna(0)
+    # check if there are new tickers
+    if new_tickers:
 
-    response = {
-        'lastUpdated': max(dividend_payers['lastUpdated']).strftime("%Y-%m-%dT%H:%M:%S"),
-        'benchmarks': {
-            'riskFreeRate': max(dividend_payers['riskFreeRate']),
-            'marketRate': max(dividend_payers['marketRate'])
-        }
-    }
+        # extract data for known tickers from start date
+        new_ticker_data = yf.download(new_tickers, 
+                                      start='max', 
+                                      end=datetime.today(), 
+                                      actions=True)
 
-    dividend_payers = dividend_payers.drop(columns=['lastUpdated', 'riskFreeRate', 'marketRate'])
+        # extract the price and dividend history from the yf.download request
+        new_ticker_prices, new_ticker_dividends = utils.extract_prices_and_dividends(yf_data=new_ticker_data)
+    
+        prices_df = pd.concat([prices_df, new_ticker_prices], axis=0, ignore_index=True)
+        dividends_df = pd.concat([dividends_df, new_ticker_dividends], axis=0, ignore_index=True)
 
-    data = []
-    for ticker in dividend_payer_tickers:
+    # append the price and dividend dfs to their respective bigquery tables
+    utils.load_table_from_dataframe(bg_client=bg_client,
+                                    data=prices_df,
+                                    table_id=PRICE_TABLE_ID,
+                                    location=LOCATION,
+                                    schema=PRICE_SCHEMA,
+                                    write_disposition='WRITE_APPEND',
+                                    ignore_unknown_values=True)
+    utils.load_table_from_dataframe(bg_client=bg_client,
+                                    data=dividends_df,
+                                    table_id=DIVIDEND_TABLE_ID,
+                                    location=LOCATION,
+                                    schema=DIVIDEND_SCHEMA,
+                                    write_disposition='WRITE_APPEND',
+                                    ignore_unknown_values=True)
 
-        ticker_data = dividend_payers.loc[dividend_payers['ticker'] == ticker].to_dict('records')[0]
-
-        ticker_price_history = price_history.loc[price_history['ticker'] == ticker]
-        ticker_dividend_history = dividend_history.loc[dividend_history['ticker'] == ticker]
-
-        ticker_data['priceHistory'] = ticker_price_history[['date', 'price']].to_dict('records')
-        ticker_data['dividendHistory'] = ticker_dividend_history[['date', 'dividend']].to_dict('records')
-
-        data.append(ticker_data)
-
-    response['companies'] = data
-
-    bucket = storage_client.get_bucket(BUCKET_NAME)
-    blob = bucket.blob(STORAGE_FILE_NAME)
-    json_string = json.dumps(response)
-    blob.upload_from_string(json_string, content_type='application/json')
+    utils.update_model(bg_client=bg_client,
+                       storage_client=storage_client,
+                       bucket_name=STORAGE_BUCKET_NAME,
+                       file_name=STORAGE_FILE_NAME)
 
     return "Successfully updated stock history and model storage file", 200
 
 @app.route('/model', methods=['GET'])
 def get_model():
-
-    bucket = storage_client.get_bucket(BUCKET_NAME)
-    blob = bucket.get_blob(STORAGE_FILE_NAME)
-
-    if blob is None:
-        return jsonify({'error': 'File not found'})
-
-    json_string = blob.download_as_text()
-    json_data = json.loads(json_string)
-
-    return jsonify(json_data), 200
+    # read file from storage bucket 
+    data = utils.read_storage_file(storage_client=storage_client,
+                                   bucket_name=STORAGE_BUCKET_NAME,
+                                   file_name=STORAGE_FILE_NAME)
+    return jsonify(data), 200
 
 if __name__ == '__main__':
     app.run(host="0.0.0.0", port=5000)
