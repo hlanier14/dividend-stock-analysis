@@ -2,9 +2,9 @@
 
 ### Introduction
 
-I am a dividend growth investor, meaning I look to invest in stocks that have a long track record of paying (and increasing) dividends. When I invest, I want to maximize my return by buying stocks that are undervalued relative to the future value of the its dividend payments. To do this, I can use the Gordon Growth Model, a variation of the Dividend Discound Model (DDM), to get a sense of the present value of a stock. That formula, along with a more detailed explination of the DDM, can be found [here](https://corporatefinanceinstitute.com/resources/valuation/dividend-discount-model/).
+I am a dividend growth investor, meaning I look to invest in stocks that have a long track record of paying (and increasing) dividends. When I invest, I want to maximize my return by buying stocks that are undervalued relative to the future value of the it's dividend payments. To do this, I can use the Gordon Growth Model, a variation of the Dividend Discount Model (DDM), to get a sense of the present value of a stock. That formula, along with a more detailed explanation of the DDM, can be found [here](https://corporatefinanceinstitute.com/resources/valuation/dividend-discount-model/).
 
-Problem: I dont want to hand-calculate this value for the hundreds of dividend paying stocks on the market. If I did, the stock's price would change by the time I finished!
+Problem: I don't want to hand-calculate this value for the hundreds of dividend-paying stocks on the market. If I did, the stock's price would change by the time I finished!
 
 Purpose: Automatically calculate the valuation of stocks using DDM and serve those valuations to a dashboard on my portfolio website via REST API.
 
