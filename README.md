@@ -6,7 +6,7 @@ I am a dividend growth investor, meaning I look to invest in stocks that have a 
 
 Problem: I don't want to hand-calculate this value for the hundreds of dividend-paying stocks on the market. If I did, the stock's price would change by the time I finished!
 
-Purpose: Automatically calculate the valuation of stocks using DDM and serve those valuations to a dashboard on my portfolio website via REST API.
+Solution: Automatically calculate the valuation of stocks using DDM and serve those valuations to a dashboard on my portfolio website via REST API.
 
 
 ### Approach
@@ -15,7 +15,7 @@ To solve this problem, I extract price and dividend payment history of stocks in
 
 This Flask API is containerized and deployed on a Cloud Run instance and I use Cloud Scheduler to automate database updates.
 
-##### Tools
+#### Tools
 - yfinance
 - Flask
 - BigQuery

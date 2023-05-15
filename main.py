@@ -165,8 +165,6 @@ def update_history():
     # tickers that have a price history
     known_tickers = [ticker for ticker in all_tickers if ticker not in new_tickers]
 
-    known_tickers = known_tickers[0:5]
-
     # extract data for known tickers from start date
     known_ticker_data = yf.download(known_tickers, 
                                     start=last_updated, 
