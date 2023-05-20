@@ -6,6 +6,7 @@ from datetime import timedelta, datetime
 import pandas as pd
 import bs4 as bs
 import json
+import pytz
 
 
 class LimiterSession(LimiterMixin, Session):
@@ -215,6 +216,8 @@ def extract_prices_and_dividends(yf_data: pd.DataFrame) -> pd.DataFrame:
 
         # convert date column to datetime
         prices['Date'] = pd.to_datetime(prices['Date'], utc=True)
+        prices = format_datetime_column(df=prices,
+                                        col='Date')
 
         # change column names
         prices.columns = ['date', 'price']
@@ -233,6 +236,8 @@ def extract_prices_and_dividends(yf_data: pd.DataFrame) -> pd.DataFrame:
 
         # convert date column to datetime
         dividends['Date'] = pd.to_datetime(dividends['Date'], utc=True)
+        dividends = format_datetime_column(df=dividends,
+                                           col='Date')
 
         # exclude dates with no dividend payment
         dividends = dividends.loc[dividends[ticker] > 0]
@@ -277,7 +282,7 @@ def update_model(bg_client: bigquery.Client,
     dividend_history = run_query(bg_client=bg_client,
                                  query_file='./sql/dividend_history.sql',
                                  replacements={'DIVIDEND_PAYERS': str(dividend_payer_tickers)})
-    dividend_history = dividend_history.fillna(0)
+    dividend_history = dividend_history.dropna()
     dividend_history = format_datetime_column(df=dividend_history,
                                               col='date')
 
@@ -285,18 +290,18 @@ def update_model(bg_client: bigquery.Client,
     price_history = run_query(bg_client=bg_client,
                               query_file='./sql/price_history.sql',
                               replacements={'DIVIDEND_PAYERS': str(dividend_payer_tickers)})
-    price_history = price_history.fillna(0)
+    price_history = price_history.dropna()
     price_history = format_datetime_column(df=price_history,
                                            col='date')
 
     # remove update time and benchmark rates to exclude from ticker dictionaries
-    dividend_payers = dividend_payers.drop(columns=['lastUpdated', 'riskFreeRate', 'marketRate'])
+    dividend_payers_clean = dividend_payers.drop(columns=['riskFreeRate', 'marketRate'])
 
     data = []
     for ticker in dividend_payer_tickers:
 
         # get metadata on ticker and convert to dictionary
-        ticker_data = dividend_payers.loc[dividend_payers['ticker'] == ticker].to_dict('records')[0]
+        ticker_data = dividend_payers_clean.loc[dividend_payers_clean['ticker'] == ticker].to_dict('records')[0]
 
         # get price and dividend history for ticker
         ticker_price_history = price_history.loc[price_history['ticker'] == ticker]
@@ -312,7 +317,7 @@ def update_model(bg_client: bigquery.Client,
     # add ticker data to response
     # include update time and benchmark rates
     response = {
-        'lastUpdated': max(dividend_payers['lastUpdated']).strftime("%Y-%m-%dT%H:%M:%S"),
+        'lastUpdated': datetime.now(pytz.utc).strftime("%Y-%m-%dT%H:%M:%S"),
         'benchmarks': {
             'riskFreeRate': max(dividend_payers['riskFreeRate']),
             'marketRate': max(dividend_payers['marketRate'])

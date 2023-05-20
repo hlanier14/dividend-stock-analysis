@@ -139,8 +139,7 @@ model AS (
     riskFreeRate,
     requiredRate,
     valuation,
-    pctChange,
-    CURRENT_DATETIME() AS lastUpdated
+    pctChange
   FROM value_change
   WHERE pctChange > 0
   ORDER BY pctChange

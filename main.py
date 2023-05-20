@@ -153,7 +153,7 @@ def update_history():
     # get all tickers from company table
     all_tickers = utils.run_query(bg_client=bg_client,
                                   query_file='./sql/tickers.sql')
-    all_tickers['ticker'].to_list()
+    all_tickers = all_tickers['ticker'].to_list()
 
     # check for newly added tickers that do not have pricing history
     new_tickers = utils.run_query(bg_client=bg_client,
@@ -170,7 +170,7 @@ def update_history():
                                     start=last_updated, 
                                     end=datetime.today(), 
                                     actions=True)
-
+    
     # extract the price and dividend history from the yf.download request
     prices_df, dividends_df = utils.extract_prices_and_dividends(yf_data=known_ticker_data)
 
