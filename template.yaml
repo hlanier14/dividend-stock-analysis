@@ -1,0 +1,974 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: Extract data from yfinance, store in S3 bucket, and analyze with Glue
+
+Globals:
+
+  Api:
+    Cors:
+      AllowMethods: "'GET,POST,OPTIONS'"
+      AllowHeaders: "'content-type'"
+      AllowOrigin: "'*'"
+
+Parameters:
+
+  pS3BucketName:
+    Type: String
+    Description: "Unique S3 bucket to create"
+    AllowedPattern: "[a-zA-Z][a-zA-Z0-9_-]*"
+
+  pTickerFolder:
+    Type: String
+    Description: "Folder to store ticker files"
+    Default: "tickers"
+
+  pDataFolder:
+    Type: String
+    Description: "Folder to store data files"
+    Default: "data"
+
+  pAnalysisFolder:
+    Type: String
+    Description: "Folder to store analysis output"
+    Default: "analysis"
+
+  pRawFolder:
+    Type: String
+    Description: "Subfolder to store raw dataset"
+    Default: "raw"
+
+  pArchiveFolder:
+    Type: String
+    Description: "Subfolder to store dataset after step function"
+    Default: "archive"
+
+  pErrorFolder:
+    Type: String
+    Description: "Subfolder to store dataset after any error"
+    Default: "error"
+
+  pTransformFolder:
+    Type: String
+    Description: "Subfolder to store transformed dataset"
+    Default: "transform"
+
+Resources:
+
+  # Roles
+
+  S3InvokeLambdaPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      SourceAccount: !Sub ${AWS::AccountId}
+      Action: lambda:InvokeFunction
+      FunctionName: !GetAtt  StartStepFunction.Arn
+      Principal: s3.amazonaws.com
+      SourceArn: !Sub arn:aws:s3:::${pS3BucketName}
+
+  LambdaRole: 
+    Type: "AWS::IAM::Role"
+    Properties: 
+      AssumeRolePolicyDocument: 
+        Version: "2012-10-17"
+        Statement: 
+          - Effect: "Allow"
+            Principal: 
+              Service: 
+                - "lambda.amazonaws.com" 
+            Action: 
+              - "sts:AssumeRole"  
+      ManagedPolicyArns:
+          - !Ref ManagedPolicyForLambda
+          - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+
+  ManagedPolicyForLambda: 
+    Type: "AWS::IAM::ManagedPolicy"
+    Properties:
+      Description: "This is sample CFN template"
+      PolicyDocument: 
+        Version: "2012-10-17"
+        Statement: 
+          - Sid: "s3listaccess"
+            Effect: "Allow"
+            Action: 
+              - "s3:List*"
+            Resource: !Sub "arn:aws:s3:::${pS3BucketName}"
+          - Sid: "s3putaccess"
+            Effect: "Allow"
+            Action: 
+              - "s3:Get*"
+              - "s3:Put*"
+              - "s3:Delete*"
+            Resource: !Sub "arn:aws:s3:::${pS3BucketName}/*"
+          - Sid: "s3deletebucket"
+            Effect: "Allow"
+            Action: 
+              - "s3:DeleteBucket"
+            Resource: !Sub "arn:aws:s3:::${pS3BucketName}"
+          - Sid: "glue"
+            Effect: "Allow"
+            Action: "glue:*"
+            Resource: 
+                - !Sub "arn:aws:glue:${AWS::Region}:${AWS::AccountId}:database/${GlueDB}"
+                - !Sub "arn:aws:glue:${AWS::Region}:${AWS::AccountId}:table/${GlueDB}/*"
+                - !Sub "arn:aws:glue:${AWS::Region}:${AWS::AccountId}:catalog"
+                - !Sub "arn:aws:glue:${AWS::Region}:${AWS::AccountId}:crawler/data-crawler"
+                - !Sub "arn:aws:glue:${AWS::Region}:${AWS::AccountId}:crawler/ticker-crawler"
+
+  BasicLambdaRole: 
+    Type: "AWS::IAM::Role"
+    Properties: 
+      AssumeRolePolicyDocument: 
+        Version: "2012-10-17"
+        Statement: 
+          - Effect: "Allow"
+            Principal: 
+              Service: 
+                - "lambda.amazonaws.com" 
+            Action: 
+              - "sts:AssumeRole"  
+      ManagedPolicyArns:
+          - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+          - !Ref BasicManagedPolicyForLambda
+
+  BasicManagedPolicyForLambda: 
+    Type: "AWS::IAM::ManagedPolicy"
+    Properties:
+      Description: "This is sample CFN template"
+      PolicyDocument: 
+        Version: "2012-10-17"
+        Statement: 
+          - Sid: "stepfunction"
+            Effect: "Allow"
+            Action: "states:*"
+            Resource: !Sub ${StepFunction}
+          - Sid: "s3listaccess"
+            Effect: "Allow"
+            Action: 
+              - "s3:List*"
+            Resource: !Sub "arn:aws:s3:::${pS3BucketName}"
+          - Sid: "s3putaccess"
+            Effect: "Allow"
+            Action: 
+              - "s3:Get*"
+              - "s3:Put*"
+              - "s3:Delete*"
+            Resource: !Sub "arn:aws:s3:::${pS3BucketName}/*"
+
+  GlueRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: "Allow"
+            Principal:
+              Service:
+                - "glue.amazonaws.com"
+            Action:
+              - "sts:AssumeRole"
+      Policies:
+        - PolicyName: "root"
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Sid: "s3listaccess"
+                Effect: "Allow"
+                Action: 
+                  - "s3:List*"
+                Resource: !Sub "arn:aws:s3:::${pS3BucketName}"
+              - Sid: "s3putaccess"
+                Effect: "Allow"
+                Action: 
+                  - "s3:Get*"
+                  - "s3:Put*"
+                  - "s3:Delete*"
+                Resource: !Sub "arn:aws:s3:::${pS3BucketName}/*"
+              - Sid: "glue"
+                Effect: "Allow"
+                Action: "glue:*"
+                Resource: 
+                  - !Sub "arn:aws:glue:${AWS::Region}:${AWS::AccountId}:database/${GlueDB}"
+                  - !Sub "arn:aws:glue:${AWS::Region}:${AWS::AccountId}:table/${GlueDB}/*"
+                  - !Sub "arn:aws:glue:${AWS::Region}:${AWS::AccountId}:catalog"
+              - Sid: "cwlog"
+                Effect: "Allow"
+                Action: "logs:*"
+                Resource: 
+                  - !Sub "arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws-glue/*"
+
+  StepFunctionRole: 
+    Type: "AWS::IAM::Role"
+    Properties: 
+      AssumeRolePolicyDocument:   
+        Version: "2012-10-17"
+        Statement: 
+          - Effect: "Allow"
+            Principal: 
+              Service: 
+                - "states.amazonaws.com"  
+            Action: 
+              - "sts:AssumeRole"  
+      ManagedPolicyArns:
+          - !Ref ManagedPolicyForStepFunction
+
+  ManagedPolicyForStepFunction: 
+    Type: "AWS::IAM::ManagedPolicy"
+    Properties:
+      Description: "This is sample CFN template"
+      PolicyDocument: 
+        Version: "2012-10-17"
+        Statement: 
+          - Sid: "s3listaccess"
+            Effect: "Allow"
+            Action: "lambda:InvokeFunction"
+            Resource: 
+              - !GetAtt  StartCrawlerFunction.Arn
+              - !GetAtt  CheckCrawlerStatusFunction.Arn
+              - !GetAtt  DataCollectorFunction.Arn
+              - !GetAtt  ArchiveFunction.Arn
+          - Sid: "glueaccess"
+            Effect: "Allow"
+            Action: 
+              - "glue:StartJobRun"
+              - "glue:GetJobRun"
+              - "glue:GetJobRuns"
+              - "glue:BatchStopJobRun"
+            Resource: "*"
+          - Sid: "xrayaccess"
+            Effect: "Allow"
+            Action:
+              -  "xray:PutTraceSegments"
+              -  "xray:PutTelemetryRecords"
+              -  "xray:GetSamplingRules"
+              -  "xray:GetSamplingTargets"
+            Resource: "*"
+
+  # S3 Bucket
+
+  S3Bucket:
+    Type: AWS::S3::Bucket    
+    Properties:
+      VersioningConfiguration:
+        Status: Enabled
+      BucketName: !Ref pS3BucketName
+      NotificationConfiguration:
+        LambdaConfigurations:
+          - Event: 's3:ObjectCreated:*'
+            Filter:
+              S3Key:
+                Rules:
+                  - Name: prefix
+                    Value: !Sub "${pTickerFolder}/${pRawFolder}"
+                  - Name: suffix
+                    Value: .csv
+            Function: !GetAtt  StartStepFunction.Arn
+      BucketEncryption: 
+        ServerSideEncryptionConfiguration: 
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+
+  # Lambda Functions
+
+  S3ObjectFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: s3-objects
+      Description: Manage s3 objects
+      Role: !GetAtt LambdaRole.Arn
+      CodeUri: lambda
+      Handler: s3_objects.handler
+      Runtime: python3.9
+      Timeout: 360
+      Layers: 
+        - !Ref CFNResponseLayer
+
+  TickerCollectorFunction:
+    Type: AWS::Serverless::Function 
+    Properties:
+      FunctionName: ticker-collector
+      Description: Collects S&P 500 tickers and stores in S3
+      Role: !GetAtt LambdaRole.Arn
+      CodeUri: lambda
+      Handler: ticker_collector.lambda_handler
+      Runtime: python3.9
+      Timeout: 60
+      Layers:
+        - !Ref AWSDataWranglerLayer
+      Environment:
+        Variables:
+          BUCKETNAME: !Ref pS3BucketName 
+          TICKER_FOLDER: !Ref pTickerFolder 
+          RAW_FOLDER: !Ref pRawFolder 
+      Events:
+        ScheduledEvent:
+          Type: Schedule
+          Properties:
+            Schedule: cron(0 0 ? * MON-FRI *)
+            Enabled: True 
+
+  StartStepFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: start-step-function
+      Description: Starts data pipeline step function
+      Role: !GetAtt BasicLambdaRole.Arn
+      CodeUri: lambda
+      Handler: start_step_function.lambda_handler
+      Runtime: python3.9
+      Timeout: 60
+      Environment:
+        Variables:
+          STEP_FUNC_ARN: !Ref StepFunction
+          DATA_FOLDER: !Ref pDataFolder
+          TICKER_FOLDER: !Ref pTickerFolder
+          ARCHIVE_FOLDER: !Ref pArchiveFolder
+          ERROR_FOLDER: !Ref pErrorFolder
+          RAW_FOLDER: !Ref pRawFolder
+          TRANSFORM_FOLDER: !Ref pTransformFolder
+
+  DataCollectorFunction:
+    Type: AWS::Serverless::Function 
+    Properties:
+      FunctionName: data-collector
+      Description: Collects S&P 500 data and stores in S3
+      Role: !GetAtt LambdaRole.Arn
+      CodeUri: lambda
+      Handler: data_collector.lambda_handler
+      Runtime: python3.7
+      Timeout: 600
+      MemorySize: 2048
+      Layers:
+        - !Ref YFinanceLayer
+      Environment:
+        Variables:
+          BUCKETNAME: !Ref pS3BucketName 
+          DATA_FOLDER: !Ref pDataFolder 
+
+  StartCrawlerFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: start-crawler
+      Description: Starts glue crawler
+      Role: !GetAtt LambdaRole.Arn
+      CodeUri: lambda
+      Handler: start_crawler.lambda_handler
+      Runtime: python3.9
+      Timeout: 60
+
+  CheckCrawlerStatusFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: check-crawler
+      Description: Checks status of crawler
+      Role: !GetAtt LambdaRole.Arn
+      CodeUri: lambda
+      Handler: check_crawler.lambda_handler
+      Runtime: python3.9
+      Timeout: 30
+      Environment:
+        Variables:
+          RETRYLIMIT: 200
+
+  ArchiveFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: archive
+      Description: Moves a file to either archive or error
+      Role: !GetAtt LambdaRole.Arn
+      CodeUri: lambda
+      Handler: move_file.lambda_handler
+      Runtime: python3.9
+      Timeout: 30
+      Environment:
+        Variables:
+          archive_folder_name: !Ref pArchiveFolder
+          error_folder_name: !Ref pErrorFolder
+
+  ReadS3File:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: read-s3
+      Description: Read file from S3 bucket
+      Role: !GetAtt LambdaRole.Arn
+      CodeUri: lambda
+      Handler: read_s3.lambda_handler
+      Runtime: python3.9
+      Timeout: 30
+      Environment:
+        Variables:
+          BUCKET_NAME: !Ref pS3BucketName
+          OBJECT_KEY: !Sub "${pAnalysisFolder}/output.json"
+      Events:
+        ApiEvent:
+          Type: Api
+          Properties:
+            Path: /data
+            Method: GET
+            RestApiId:
+              Ref: StockAnalysisAPI
+
+  # Lambda Layers
+
+  AWSDataWranglerLayer:
+    Type: AWS::Serverless::LayerVersion
+    Properties:
+      LayerName: awswrangler-layer
+      ContentUri: layers/awswrangler-layer-3.4.2-py3.9.zip
+      CompatibleRuntimes:
+        - python3.9
+      RetentionPolicy: Delete
+    Metadata:
+      BuildArchitecture: 'x86_64'
+
+  YFinanceLayer:
+    Type: AWS::Serverless::LayerVersion
+    Properties:
+      LayerName: yfinance-layer
+      ContentUri: layers/yfinance.zip
+      CompatibleRuntimes:
+        - python3.7
+      RetentionPolicy: Delete
+    Metadata:
+      BuildArchitecture: 'x86_64'
+
+  CFNResponseLayer:
+      Type: AWS::Serverless::LayerVersion
+      Properties:
+        LayerName: cfnresponse-layer
+        ContentUri: ./layers/cfnresponse
+        CompatibleRuntimes:
+          - python3.9
+          - python3.8
+          - python3.7
+        LicenseInfo: MIT
+        RetentionPolicy: Delete
+      Metadata:
+        BuildArchitecture: 'x86_64'
+
+  # Glue
+
+  GlueDB:
+    Type: AWS::Glue::Database
+    Properties: 
+      CatalogId: !Ref AWS::AccountId
+      DatabaseInput: 
+        Name: !Sub "${AWS::StackName}-database"
+        Description: glue database 
+
+  DataCrawler:
+    Type: "AWS::Glue::Crawler"
+    DependsOn: S3Bucket
+    Properties:
+      Role: !Ref GlueRole
+      Name: data-crawler
+      Description: "Crawler to generate the schema of the data file"
+      DatabaseName: !Ref GlueDB
+      TablePrefix: data-
+      Targets: 
+        S3Targets: 
+          - Path: !Sub "s3://${pS3BucketName}/${pDataFolder}/${pRawFolder}"
+
+  TickerCrawler:
+    Type: "AWS::Glue::Crawler"
+    DependsOn: S3Bucket
+    Properties:
+      Role: !Ref GlueRole
+      Name: ticker-crawler
+      Description: "Crawler to generate the schema of the ticker file"
+      DatabaseName: !Ref GlueDB
+      TablePrefix: ticker-
+      Targets: 
+        S3Targets: 
+          - Path: !Sub "s3://${pS3BucketName}/${pTickerFolder}/${pRawFolder}"
+
+  TickerTransformJobS3Resource:
+    Type: Custom::S3CustomResource
+    Properties:
+      ServiceToken: !GetAtt S3ObjectFunction.Arn
+      the_bucket: !Ref S3Bucket
+      file_prefix: "glue/ticker-transform.py"
+      file_content: !Sub |
+        import sys
+        from awsglue.transforms import *
+        from awsglue.utils import getResolvedOptions
+        from pyspark.context import SparkContext
+        from awsglue.context import GlueContext
+        from awsglue.job import Job
+        import pyspark.sql.functions as F
+        from pyspark.sql.types import TimestampType
+        import boto3
+        import json
+
+        args = getResolvedOptions(sys.argv, ['JOB_NAME'])
+
+        sc = SparkContext()
+        glueContext = GlueContext(sc)
+        spark = glueContext.spark_session
+        job = Job(glueContext)
+        job.init(args['JOB_NAME'], args)
+        s3 = boto3.resource('s3')
+
+        dynamic_frame_read = glueContext.create_dynamic_frame.from_catalog(database = "${GlueDB}", table_name = "ticker-${pRawFolder}")
+        data_frame = dynamic_frame_read.toDF()
+
+        data_frame = data_frame.withColumn("updatedat", F.to_utc_timestamp(F.col("updatedat"), "UTC").cast(TimestampType()))
+
+        latest_updatedat_values = (
+            data_frame
+            .select("updatedat")
+            .distinct()
+            .orderBy("updatedat", ascending=False)
+            .limit(2)
+            .collect()
+        )
+
+        latest_df = (
+            data_frame
+            .filter(data_frame["updatedat"] == latest_updatedat_values[0]["updatedat"])
+            .select("symbol")
+            .distinct()
+        )
+
+        previous_df = spark.createDataFrame(spark.sparkContext.emptyRDD(), latest_df.schema)
+
+        if len(latest_updatedat_values) == 2:
+            previous_df = (
+                data_frame
+                .filter(data_frame["updatedat"] == latest_updatedat_values[1]["updatedat"])
+                .select("symbol")
+                .distinct()
+            )
+
+        new_symbols = latest_df.subtract(previous_df)
+
+        new_symbols_list = [row['symbol'] for row in new_symbols.collect()]
+        previous_symbols_list = [row['symbol'] for row in previous_df.collect()]
+
+        data = {'New_Tickers': new_symbols_list, 'Old_Tickers': previous_symbols_list}
+
+        s3object = s3.Object('${pS3BucketName}', '${pTickerFolder}/${pTransformFolder}/data_input.json')
+        s3object.put(
+            Body=(bytes(json.dumps(data).encode('UTF-8')))
+        )
+
+        job.commit()
+
+  TickerTransformGlueJob:
+    Type: AWS::Glue::Job
+    Properties:
+      Name: ticker-transform
+      Command:
+        Name: glueetl
+        ScriptLocation: !Sub "s3://${pS3BucketName}/glue/ticker-transform.py"
+      DefaultArguments:
+        "--enable-auto-scaling": "true"
+        "--job-bookmark-option": "job-bookmark-enable"
+      ExecutionProperty:
+        MaxConcurrentRuns: 20
+      MaxRetries: 0
+      Role: !Ref GlueRole
+      GlueVersion: "3.0"
+      NumberOfWorkers: 100
+      WorkerType: G.1X
+
+  DividendAnalysisJobS3Resource:
+    Type: Custom::S3CustomResource
+    Properties:
+      ServiceToken: !GetAtt S3ObjectFunction.Arn
+      the_bucket: !Ref S3Bucket
+      file_prefix: "glue/dividend-analysis.py"
+      file_content: !Sub |
+        import sys
+        import boto3
+        from awsglue.utils import getResolvedOptions
+        from pyspark.context import SparkContext
+        from awsglue.context import GlueContext
+        from awsglue.job import Job
+        from pyspark.sql import functions as F
+        from pyspark.sql.window import Window
+        from datetime import datetime, timedelta
+
+        # set up Spark and GlueContext
+        args = getResolvedOptions(sys.argv, ['JOB_NAME'])
+
+        sc = SparkContext()
+        glueContext = GlueContext(sc)
+        spark = glueContext.spark_session
+        job = Job(glueContext)
+        job.init(args['JOB_NAME'], args)
+
+        s3_client = boto3.client('s3')
+
+        # load raw data
+        raw_data = glueContext.create_dynamic_frame.from_catalog(database="${GlueDB}", table_name="data-${pRawFolder}").toDF()
+        raw_tickers = glueContext.create_dynamic_frame.from_catalog(database="${GlueDB}", table_name="ticker-${pRawFolder}").toDF()
+
+        # transform ticker columns
+        transformed_tickers = (
+            raw_tickers
+            .withColumn("row_num", F.row_number().over(Window.partitionBy("symbol").orderBy(F.col("updatedAt").desc())))
+            .filter(F.col("row_num") == 1)
+            .select(
+                F.col('symbol').alias('ticker'), 
+                F.col('security').alias('name'), 
+                F.col('gics sector').alias('sector'), 
+                F.col('gics sub-industry').alias('industry')
+            )
+        )
+
+        # transform data columns
+        transformed_data = (
+            raw_data
+            .dropDuplicates(['ticker', 'date'])
+            .withColumn('date', F.col('date').cast('timestamp'))
+            .withColumn('year', F.year('date'))
+            .withColumn('month', F.month('date'))
+        )
+
+        # Remove S&P and Treasury data
+        company_data = transformed_data.filter(~F.col('ticker').isin(['^GSPC', '^TNX']))
+
+        # annual dividends
+        annual_dividends = (
+            company_data
+            .groupBy('ticker', 'year')
+            .agg(
+                F.sum('dividends').alias('annual_dividend'),
+                F.count(F.when(F.col('dividends') > 0, F.col('dividends'))).alias('dividendFrequency')
+            )
+        )
+
+        # consecutive dividend growth years and 5 year CAGR
+        annual_window = Window.partitionBy('ticker').orderBy('year')
+        five_year_window = Window.partitionBy('ticker').orderBy('year').rowsBetween(-4, 0)
+        dividend_calculations = (
+            annual_dividends
+            .withColumn('dividend_increase', F.col('annual_dividend') - F.lag('annual_dividend').over(annual_window))
+            .withColumn('flag', F.when(F.col('dividend_increase') > 0, 1).otherwise(0))
+            .withColumn('grp', F.row_number().over(annual_window) - F.row_number().over(Window.partitionBy('ticker', 'flag').orderBy('flag')))
+            .withColumn('consecutiveGrowthYears', F.when(F.col('flag') == 0, 0).otherwise(F.row_number().over(Window.partitionBy('ticker', 'flag', 'grp').orderBy('year'))))
+            .where(F.col('consecutiveGrowthYears') >= 5)
+            .withColumn('fiveYearCAGR',F.pow(F.last('annual_dividend').over(five_year_window) / F.first('annual_dividend').over(five_year_window), 1/5) - 1)
+            .where(F.col('year') == (datetime.today().year - 1))
+            .select(['ticker', 'dividendFrequency', 'consecutiveGrowthYears', 'fiveYearCAGR'])
+        )
+
+        # 5 year monthly beta calculation
+        group_window = Window.partitionBy('ticker', 'year', 'month').orderBy(F.desc('date'))
+        five_year_data = (
+            company_data
+            .filter(F.col('date') >= (datetime.today() - timedelta(days=(365*5))))
+            .withColumn('returns', F.log(F.col('adj close') / F.lag('adj close').over(Window.partitionBy('ticker').orderBy('date')).cast('double')))
+        )
+
+        market_data = (
+            transformed_data
+            .where(F.col('ticker') == '^GSPC')
+            .filter(F.col('date') >= (datetime.today() - timedelta(days=(365*5))))
+            .withColumn('sp500_returns', F.log(F.col('adj close') / F.lag('adj close').over(Window.orderBy('date')).cast('double')))
+            .select('date', 'sp500_returns')
+        )
+
+        beta_result = (
+            five_year_data
+            .join(market_data, 'date')
+            .groupBy('ticker')
+            .agg(
+                F.covar_pop('returns', 'sp500_returns').alias('covar'),
+                F.var_pop('sp500_returns').alias('variance_sp500')
+            )
+            .withColumn('beta', F.col('covar') / F.col('variance_sp500'))
+            .select('ticker', 'beta')
+        )
+
+        # latest price and dividend
+        latest_data = (
+            company_data
+            .orderBy('date') 
+            .groupBy('ticker')
+            .agg(
+                F.last('adj close').alias('lastPrice'),
+                F.last(F.when(F.col('dividends') > 0, F.col('dividends')), ignorenulls=True).alias('lastDividend')
+            )
+        )
+
+        # historical data
+        historical_prices = (
+            company_data
+            .filter(F.col('date') >= (datetime.today() - timedelta(days=365)))
+            .groupBy('ticker')
+            .agg(
+                F.collect_list(F.when(F.col('date') >= (datetime.today() - timedelta(days=30)), F.struct('date', 'adj close'))).alias('priceHistory'),
+                F.collect_list(F.when((F.col('dividends') > 0) & (F.col('date') >= (datetime.today() - timedelta(days=365))), F.struct('date', 'dividends'))).alias('dividendHistory')
+            )
+            .withColumn('priceHistory', F.expr('sort_array(priceHistory, true)'))
+            .withColumn('dividendHistory', F.expr('sort_array(dividendHistory, true)'))
+        )
+
+        # join all results
+        result = (
+            dividend_calculations
+            .join(beta_result, 'ticker')
+            .join(latest_data, 'ticker')
+            .join(transformed_tickers, 'ticker')
+            .join(historical_prices, 'ticker')
+            .groupBy()
+            .agg(
+                F.collect_list(
+                    F.struct(
+                        F.col('ticker'),
+                        F.col('name'),
+                        F.col('sector'),
+                        F.col('industry'),
+                        F.col('consecutiveGrowthYears'),
+                        F.col('dividendFrequency'),
+                        F.col('beta'),
+                        F.col('fiveYearCAGR'),
+                        F.col('lastDividend'),
+                        F.col('lastPrice'),
+                        F.col('priceHistory'),
+                        F.col('dividendHistory')
+                    )
+                ).alias('companies')
+            )
+        )
+
+        # latest market data
+        sp500_cagr = (
+            transformed_data
+            .filter((F.col('ticker') == '^GSPC') & (F.col('date') >= (datetime.today() - timedelta(days=365 * 5))))
+            .orderBy('date')
+            .groupBy('ticker')
+            .agg(
+                (F.pow(F.last('adj close') / F.first('adj close'), 1 / 5) - 1).alias('rate')
+            )
+        )
+
+        latest_risk_free = (
+            transformed_data
+            .filter(F.col('ticker') == '^TNX')
+            .groupBy('ticker')
+            .agg(
+                (F.last(F.col('adj close')) / 100).alias('rate')
+            )
+        )
+
+        latest_market = (
+            sp500_cagr
+            .union(latest_risk_free)
+            .groupBy()
+            .agg(
+                F.collect_list(
+                    F.struct(
+                        F.col('ticker'),
+                        F.col('rate')
+                    )
+                ).alias('benchmarks')
+            )
+        )
+
+        combined_df = (
+            result
+            .join(latest_market)
+            .withColumn('lastUpdated', F.lit(F.current_timestamp()))
+        )
+
+        json_content = combined_df.toJSON().collect()
+        json_data = '[' + ','.join(json_content) + ']'
+
+        object_key = '${pAnalysisFolder}/output.json'
+        s3_client.put_object(Body=json_data, Bucket="${pS3BucketName}", Key=object_key)
+
+        job.commit()
+
+  DividendAnalysisGlueJob:
+    Type: AWS::Glue::Job
+    Properties:
+      Name: dividend-analysis
+      Command:
+        Name: glueetl
+        ScriptLocation: !Sub "s3://${pS3BucketName}/glue/dividend-analysis.py"
+      DefaultArguments:
+        "--enable-auto-scaling": "true"
+        "--job-bookmark-option": "job-bookmark-enable"
+      ExecutionProperty:
+        MaxConcurrentRuns: 20
+      MaxRetries: 0
+      Role: !Ref GlueRole
+      GlueVersion: "3.0"
+      NumberOfWorkers: 100
+      WorkerType: G.1X
+
+  # Step Function 
+
+  StepFunction:
+    Type: AWS::StepFunctions::StateMachine
+    Properties:
+      StateMachineName: !Sub "${AWS::StackName}-step-function"
+      TracingConfiguration: 
+        Enabled: true
+      RoleArn: !GetAtt StepFunctionRole.Arn
+      DefinitionString: !Sub |
+        {
+          "Comment": "Step function ",
+          "StartAt": "Start Ticker Crawler",
+          "States": {
+            "Start Ticker Crawler": {
+              "Type": "Task",
+              "ResultPath": "$.taskresult",
+              "Resource": "arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:${StartCrawlerFunction}",
+              "ResultSelector": {
+                "cnt": "0",
+                "crawler_name": "ticker-crawler"
+              },
+              "Parameters": {
+                  "Crawler_Name": "ticker-crawler"
+              },
+              "Retry": [
+                {
+                    "ErrorEquals": [
+                        "CrawlerRunningException"
+                    ],
+                    "IntervalSeconds": 10,
+                    "MaxAttempts": 10,
+                    "BackoffRate": 2
+                }
+              ],
+              "Next": "Ticker Crawler Status Check"
+            },
+            "Ticker Crawler Status Check": {
+              "Type": "Task",
+              "Resource": "arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:${CheckCrawlerStatusFunction}",
+              "Next": "Ticker Crawler Finished?",
+              "ResultPath": "$.taskresult"
+            },
+            "Ticker Crawler Finished?": {
+                "Type": "Choice",
+                "Choices": [
+                    {
+                        "Or": [
+                            {
+                                "Variable": "$.taskresult.Status",
+                                "StringEquals": "STOPPING"
+                            },
+                            {
+                                "Variable": "$.taskresult.Status",
+                                "StringEquals": "RUNNING"
+                            }
+                        ],
+                        "Next": "Ticker Crawler Wait"
+                    },
+                    {
+                        "Variable": "$.taskresult.Status",
+                        "StringEquals": "READY",
+                        "Next": "Run Ticker Transform"
+                    }
+                ],
+                "Default": "Ticker Crawler Wait"
+            },
+            "Ticker Crawler Wait": {
+                "Type": "Wait",
+                "Seconds": 30,
+                "Next": "Ticker Crawler Status Check"
+            },
+            "Run Ticker Transform": {
+              "Type": "Task",
+              "Next": "Start Data Collection",
+              "ResultPath": null,
+              "Resource": "arn:aws:states:::glue:startJobRun.sync",
+              "Parameters": {
+                  "JobName": "ticker-transform"
+              }
+            },
+            "Start Data Collection": {
+              "Type": "Task",
+              "Resource": "arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:${DataCollectorFunction}",
+              "ResultPath": "$.taskresult",
+              "Next": "Start Data Crawler"
+            },
+            "Start Data Crawler": {
+              "Type": "Task",
+              "ResultPath": "$.taskresult",
+              "Resource": "arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:${StartCrawlerFunction}",
+              "ResultSelector": {
+                "cnt": "0",
+                "crawler_name": "data-crawler"
+              },
+              "Parameters": {
+                  "Crawler_Name": "data-crawler"
+              },
+              "Retry": [
+                {
+                    "ErrorEquals": [
+                        "CrawlerRunningException"
+                    ],
+                    "IntervalSeconds": 10,
+                    "MaxAttempts": 10,
+                    "BackoffRate": 2
+                }
+              ],
+              "Next": "Data Crawler Status Check"
+            },
+            "Data Crawler Status Check": {
+              "Type": "Task",
+              "Resource": "arn:aws:lambda:${AWS::Region}:${AWS::AccountId}:function:${CheckCrawlerStatusFunction}",
+              "Next": "Data Crawler Finished?",
+              "ResultPath": "$.taskresult"
+            },
+            "Data Crawler Finished?": {
+                "Type": "Choice",
+                "Choices": [
+                    {
+                        "Or": [
+                            {
+                                "Variable": "$.taskresult.Status",
+                                "StringEquals": "STOPPING"
+                            },
+                            {
+                                "Variable": "$.taskresult.Status",
+                                "StringEquals": "RUNNING"
+                            }
+                        ],
+                        "Next": "Data Crawler Wait"
+                    },
+                    {
+                        "Variable": "$.taskresult.Status",
+                        "StringEquals": "READY",
+                        "Next": "Run Dividend Analysis"
+                    }
+                ],
+                "Default": "Data Crawler Wait"
+            },
+            "Data Crawler Wait": {
+                "Type": "Wait",
+                "Seconds": 30,
+                "Next": "Data Crawler Status Check"
+            },
+            "Run Dividend Analysis": {
+              "Type": "Task",
+              "ResultPath": null,
+              "Resource": "arn:aws:states:::glue:startJobRun.sync",
+              "Parameters": {
+                  "JobName": "dividend-analysis"
+              },
+              "End": true
+            }
+          }
+        }
+
+  # API Gateway
+
+  StockAnalysisAPI:
+    Type: AWS::Serverless::Api
+    Properties:
+      StageName: prod
+
+Outputs:
+
+  StockAnalysisAPIUrl:
+    Description: Stock analysis API url
+    Value:
+      Fn::Sub: "https://${StockAnalysisAPI}.execute-api.${AWS::Region}.amazonaws.com/prod/"
