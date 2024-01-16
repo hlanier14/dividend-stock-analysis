@@ -1,27 +1,75 @@
 # Dividend Stock Analysis
 
-### Introduction
+This project is an ETL data pipeline built with serverless products on AWS. The workflow scrapes the S&P 500 tickers every weekday, extracts price and dividend data for each ticker from yfinance, and transforms the historical data for analysis. The output is served through a REST API to my [portfolio website](https://harrisonlanier.com/portfolio/dividend-analysis) and displays valuation estimates using the Gordon Growth Model. 
 
-I am a dividend growth investor, meaning I look to invest in stocks that have a long track record of paying (and increasing) dividends. When I invest, I want to maximize my return by buying stocks that are undervalued relative to the future value of the it's dividend payments. To do this, I can use the Gordon Growth Model, a variation of the Dividend Discount Model (DDM), to get a sense of the present value of a stock. That formula, along with a more detailed explanation of the DDM, can be found [here](https://corporatefinanceinstitute.com/resources/valuation/dividend-discount-model/).
+---
 
-Problem: I don't want to hand-calculate this value for the hundreds of dividend-paying stocks on the market. If I did, the stock's price would change by the time I finished!
+## Prerequisites 
 
-Solution: Automatically calculate the valuation of stocks using DDM and serve those valuations to a dashboard on my portfolio website via REST API.
+* An AWS account
+* AWS CLI with AWS account configuration
+* AWS SAM
 
+## Architecture
 
-### Approach
+<img src="images/architecture.png">
 
-To solve this problem, I extract price and dividend payment history of stocks in the S&P 500 using the yfinance Python package and store it in BigQuery. I then construct the API response by calculating  metadata for each stock along with its valuation. I store the result to Cloud Storage as a JSON to minimize SQL execution resources and decrease the APIs latency. 
+## Work Flow
 
-This Flask API is containerized and deployed on a Cloud Run instance and I use Cloud Scheduler to automate database updates.
+1. AWS Lambda function scrapes S&P 500 tickers and stores as a csv file to the S3 bucket (scheduled to run every weekday).
+2. AWS Lambda function starts the step function.
+3. AWS Glue Crawler creates the schema of the ticker file.
+4. AWS Glue job identifies new and old tickers and stores as a json file to the S3 bucket.
+5. AWS Lambda function extracts historical data from yfinance and stores as a csv file to the S3 bucket.
+6. AWS Glue Crawler creates the schema of the data file.
+7. AWS Glue job transforms and analyzes ticker data for dividend analysis and stores as a json file to the S3 bucket.
+8. AWS Lambda function reads the dividend analysis file and serves as a REST API through AWS API Gateway.
 
-#### Tools
-- yfinance
-- Flask
-- BigQuery
-- Cloud Storage
-- Cloud Scheduler
-- Docker
-- Cloud Run
+## Successful Step Function Execution
 
-Check out the UI that presents the API response [here](https://harrisonlanier.com/portfolio/dividend-analysis)!
+<img src="images/step-function.png">
+
+## Repository Structure
+
+- template.yml - CloudFormation template file
+ - layers - This folder contains python packages needed to create lambda layers
+ - glue - This folder contains the following glue jobs
+    - ticker_transform.py - Identifies new and old tickers
+    - dividend_analysis.py - Analyzes ticker data and creates API output
+ - lambda - This folder contains the following lambda functions
+    - move_file.py - Moves the source dataset to archive/transform/error folder 
+    - check_crawler.py - Checks the status of AWS Glue crawler
+    - start_crawler.py - Starts the AWS Glue crawler
+    - start_step_function.py - Starts the AWS Step Functions
+    - s3_objects.py - Saves the AWS Glue job scripts to S3
+    - data_collector.py - Extracts data from yfinance and stores to S3
+    - read_s3.py - Reads files from S3
+    - ticker_collector.py - Scrapes S&P 500 tickers and stores to S3
+
+## Deploy
+
+This project can be deployed through AWS SAM through the following steps:
+
+1.	Clone the repo
+2.	Navigate to the root directory
+3.	Execute the following AWS SAM commands
+   *sam build --use-container*
+   *sam deploy --guided*
+4.  Provide the following parameters during deployment - 
+    - pS3BucketName - Unique bucket name to store all files
+    - pTickerFolder - Folder to store ticker files
+    - pDataFolder - Folder to store data files
+    - pAnalysisFolder - Folder to store analysis output
+    - pRawFolder - Subfolder to store raw datasets
+    - pArchiveFolder - Subfolder to store dataset after step function completes
+    - pErrorFolder - Subfolder to store dataset after any error
+    - pTransformFolder - Subfolder to store transformed dataset
+5.	Check the progress of CloudFormation stack deployment in AWS console
+
+## Future Improvements
+
+- Store transformed data in AWS RDS to avoid crawling over all files for every execution.
+- Move files to error/archive after the data has been crawled and stored in AWS RDS.
+- Optimize dividend analysis AWS Glue job to minimize processing time.
+- Store metadata table to avoid calculating price and dividend metadata for every execution.
+- Add glue jobs to perform other analysis with the ticker data and serve through the same API.
